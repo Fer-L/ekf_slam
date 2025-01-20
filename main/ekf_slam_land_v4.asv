@@ -1,0 +1,223 @@
+clear;
+% close all;
+clc;
+
+% Make tools available
+addpath('tools');
+% Read landmarks. The true landmark positions are not given to the robot
+disp("Reading landmark positions")
+% load landmarks;
+landmarks = read_world('../data/world.dat');
+% Read sensor readings, i.e. odometry and range-bearing sensor
+disp("Reading sensor data")
+sensor_readings = read_data('../data/sensor_data.dat');
+
+% toogle the visualization type
+showGui = true;  % show a window while the algorithm runs
+% showGui = false; % plot to files instead
+N = size(landmarks,2);
+mu = zeros(3+2*N,1);
+sigma = eye(3 + 2 * N);
+%%%%%%%%%%%%%%%%%%%%%%%%%%
+lm_seen = struct('id', {}, 'x', {}, 'y', {});
+delta = struct('x',{},'y',{});
+lm_seen(9).id = [];
+
+motion = [];
+
+for t = 1:size(sensor_readings.timestep, 2)
+
+    [mu_pred, sigma_pred] = prediction_step(sensor_readings.timestep(t).odometry, mu, sigma, N);
+
+    % mu = mu_pred;
+    % sigma = sigma_pred;
+    [mu, sigma, lm_seen] = correction_step(mu_pred, sigma_pred, sensor_readings.timestep(t).sensor, landmarks, lm_seen);
+    % [mu, sigma] = correction_step(mu_pred, sigma_pred, sensor_readings.timestep(t).sensor, landmarks);
+
+
+    % Generate visualization plots of the current state of the filter
+    motion = plot_state(mu, sigma, landmarks, t, sensor_readings.timestep(t).sensor, showGui, motion);
+    
+    % for system tuning
+    % motion = [ motion;
+    %            mu(1) mu(2)];
+    % disp("Current state vector:")
+    % disp("mu = "), disp(mu)
+
+end
+
+% for system tuning
+motion = plot_state(mu, sigma, landmarks, t, sensor_readings.timestep(t).sensor, showGui, motion);
+
+
+function [mu_pred, sigma_pred] = prediction_step(sensor_data, mu, sigma, N)
+
+x = mu(1);
+y = mu(2);
+theta = mu(3);
+% TODO: Compute the new mu based on the noise-free (odometry-based) motion model
+delta_rot1 = sensor_data.r1;
+delta_transla = sensor_data.t;
+delta_rot2 = sensor_data.r2;
+% Remember to normalize theta after the update (hint: use the function normalize_angle available in tools)
+x_new = delta_transla * cos(theta + delta_rot1);
+y_new = delta_transla * sin(theta + delta_rot1);
+theta_new = delta_rot1 + delta_rot2;
+u_reg = [x_new; y_new; theta_new];
+% Update the State Space
+Fx = [eye(3), zeros(3,2*N)];
+mu_pred  = mu + Fx' * u_reg;
+% TODO: Compute the 3x3 Jacobian G of the motion model
+gt = eye(3) + [0 0 x_new;
+               0 0 y_new;
+               0 0 0];
+
+% Gt1 = eye(3+2*N) + F_x' *G * F_x;
+Gt = [gt zeros(3,2*N)
+      zeros(2*N,3) eye(2*N)];
+ 
+% Motion noise
+% R_t = [0.00005 0.0 0.0
+%        0.0 0.000005 0.0
+%        0.0 0.0 0.000000005];
+
+R_t = [0.02 0.0 0.0
+       0.0 0.02 0.0
+       0.0 0.0 0.002];
+
+% TODO: Compute the predicted sigma after incorporating the motion
+sigma_pred = Gt * sigma * Gt' + Fx' * R_t * Fx;
+
+end
+
+function [corr_mu, corr_sigma, lm_seen] = correction_step(mu, sigma,sensor_data,landmarks, lm_seen)
+% function [corr_mu, corr_sigma] = correction_step(mu, sigma,sensor_data,landmarks)
+x = mu(1);
+y = mu(2);
+theta = mu(3);
+
+N = size(landmarks,2);
+mu_ = zeros(3+2*N,1);
+
+
+% Define the sensor noise covariance matrix Q
+% Q = diag([0.3, 4]);
+Q = diag([0.3, 3000]);
+
+% Number of measurements in this time step
+for i = 1:size(sensor_data, 2)
+    % s = struct2cell(sensor_data);
+    % landmarks_seen = cell2mat(s(1,:))
+    % disp(mu_)
+    % Get the id of the landmark corresponding to the i-th observation
+    lm_id = sensor_data(i).id;
+    j = lm_id;
+    range = sensor_data(i).range;
+    phi = sensor_data(i).bearing;
+    % Add the landmark measurement to the Z vector
+    z = [range;
+         phi];
+
+    if isempty(lm_seen(lm_id).id)
+        lm_seen(lm_id).id = lm_id;
+        lm_seen(lm_id).x = x + range * cos(phi + theta);
+        lm_seen(lm_id).y = y + range * sin(phi + theta);
+    end
+    
+    delta = [lm_seen(lm_id).x - x;
+             lm_seen(lm_id).y - y];
+
+    q = delta' * delta;
+
+    z_hat = [sqrt(q)
+             atan2(delta(2), delta(1)) - theta];
+
+    Fx_j = [eye(3) zeros(3,(2*j -2)) zeros(3,2) zeros(3,(2*N-2*j));
+            zeros(2,3) zeros(2,(2*j -2)) eye(2) zeros(2,(2*N-2*j))];
+
+    raiz_q = sqrt(q);
+    low_H = [-raiz_q*delta(1) -raiz_q*delta(2) 0 raiz_q*delta(1) raiz_q*delta(2);
+                   delta(2) -delta(1) -q -delta(2) delta(1)];
+
+    H = 1/q * low_H * Fx_j;
+
+    mu_(3 + 2*j - 1) = mu(1) + delta(1);
+    mu_(3 + 2*j) = mu(2) + delta(2);
+    mu(3 + 2*j - 1) = 0;
+    mu(3 + 2*j) = 0;
+
+    mu_(1) = x;
+    mu_(2) = y;
+    mu_(3) = theta;
+    
+    % Compute the Kalman gain
+    K = sigma * H' * inv(H * sigma * H' + Q);
+    % erro = (z - z_hat);
+
+    mu_ = mu_ + K * (z - z_hat);
+
+    mu(3 + 2*j - 1)= mu_(3 + 2*j - 1);
+    mu(3 + 2*j)= mu_(3 + 2*j);
+    mu(1) = mu_(1);
+    mu(2) = mu_(2);
+    mu(3) = mu_(3);
+
+    % pause(0.5);
+    sigma = (eye(size(sigma)) - K * H) * sigma;
+end
+
+ corr_mu = mu;
+ corr_sigma = sigma;
+
+end
+
+
+function [motion] = plot_state(mu, sigma, landmarks, timestep, z, window, motion)
+    clf;
+    hold on
+    grid("on")
+    L = struct2cell(landmarks); 
+    drawprobellipse(mu(1:3), sigma(1:3,1:3), 0.6, 'r');
+    plot(cell2mat(L(2,:)), cell2mat(L(3,:)), 'k+', 'markersize', 10, 'linewidth', 3);
+    
+    for i = 1:size(landmarks, 2)
+
+        lm_x = mu(3 + 2*i - 1);
+        lm_y = mu(3 + 2*i);
+
+        % drawprobellipse([landmarks(i).x; landmarks(i).y], sigma(3 + 2*i - 1 : 3 + 2*i, 3 + 2*i - 1 : 3 + 2*i), 0.6, 'g');
+        
+        plot(landmarks(i).x, landmarks(i).y, 'k+', 'markersize', 8, 'linewidth', 2);
+        % text(landmarks(i).x, landmarks(i).y, sprintf('%d', landmarks(i).id), 'Color', 'b', 'FontSize', 14, 'HorizontalAlignment', 'center', 'VerticalAlignment', 'bottom');
+
+        
+        if (lm_y~=0 & lm_x~=0)
+            
+            drawprobellipse([lm_x; lm_y], sigma(3 + 2*i - 1 : 3 + 2*i, 3 + 2*i - 1 : 3 + 2*i), 0.6, 'g');
+            plot(lm_x, lm_y, '+', 'markersize', 8, 'linewidth', 2, 'Color', [1, 0.5, 0]);
+            text(lm_x, lm_y, sprintf('%.2f, %.2f', lm_x, lm_y), 'Color', 'b', 'FontSize', 10, 'HorizontalAlignment', 'center', 'VerticalAlignment', 'bottom');
+            % text(landmarks(i).x, landmarks(i).y, sprintf('%.2f, %.2f', lm_x, lm_y), 'Color', 'b', 'FontSize', 10, 'HorizontalAlignment', 'center', 'VerticalAlignment', 'bottom');
+        end
+
+    end
+    
+    drawrobot(mu(1:3), 'r', 3, 0.3, 0.3);
+    xlim([-2, 12])
+    ylim([-2, 12])
+
+    motion = [ motion;
+    mu(1) mu(2)];
+    plot(motion(:,1), motion(:,2), '.', 'markersize', 5, 'Color', 'm');
+    hold off
+
+    if window
+      set(1, "visible", "on");
+      axis equal
+      drawnow;
+      pause(0.1);
+    else
+      set(1, "visible", "off");
+      filename = sprintf('../plots/ekf_%03d.png', timestep);
+      print(filename, '-dpng');
+    end
+end
