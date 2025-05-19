@@ -20,51 +20,34 @@ sensor_readings = read_data('../data/sensor_data.dat');
 showGui = true;  % show a window while the algorithm runs
 % showGui = false; % plot to files instead
 
-N = size(landmarks,2);
-
-% Matrizes de incertezas do sistema
-LambdaHat = 0;
-%m = eye(3+2*N,3+2*N); %[0; 0.0198];
-% mudar para eye
-%Ef = eye(3+2*N, 3+2*N); % [0 5];
-%Eg = zeros(3, 3+2*N); %[0 0];
-%-------------------------------------------------------------------
-lm = false(1,N);
-X = zeros(2 * N + 3, 1);
-XHat = X;
-P = [zeros(3), zeros(3, 2 * N); zeros(3, 2 * N)', zeros(2 * N)];
-
+M = 0;
+landmark_map = [];
+xhat = zeros(3, 1);
+Qr = [0.05 0
+      0 0.05];
 % initialize diagonal of pose covariance with small, nonzero values
 % since we have a good estimate of the starting pose
-P = zeros(2 * N + 3, 2 * N + 3);
-P(1:3,1:3) = 0.001;
-
+Pr = zeros(2 * M + 3);
+P = Pr;
+Rr = [0.1,         0;
+      0,         0.01];
 % initialize landmark variances to large values since we have
 % no prior information on the locations of the landmarks
-for i = 4:N*2+3
-    P(i,i) = 10;
-end
+
 
 motion = [];
 
 for k = 1:size(sensor_readings.timestep, 2)
 
-    [X, P, Q, Gx, Fk] = prediction_step(sensor_readings.timestep(k).odometry, X, P, N);
+    % Predict Step
+    [xhat_pred, P_pred, M, landmark_map] = prediction_step(sensor_readings.timestep(k).odometry, sensor_readings.timestep(k).sensor, xhat, P, M, Qr, Rr, landmark_map);
     
-    [X, P, lm, H, R] = correction_step(X, P, sensor_readings.timestep(k).sensor, N, lm);
+    % Update Step
+    [xhat, P] = correction_step(xhat_pred, P_pred, sensor_readings.timestep(k).sensor, landmark_map, Rr);
+
+    motion = plot_state(xhat, P, landmarks, landmark_map, sensor_readings.timestep(k).sensor, showGui, motion);
     
-    %if (k == 1)
-    %    LambdaHat = (1 + 0.5) * norm(m' * H' * inv(R) * H * m);
-        %invLambdaHat = inv(LambdaHat);
-    %end
-
-    %[x, p] = robusto(x, p, Q, gk, Fk, H, R, m, LambdaHat, Ef, Eg, N);
-
-    motion = plot_state(X, P, landmarks, lm, sensor_readings.timestep(k).sensor, showGui, motion);
 end
-
-% for system tuning
-%motion = plot_state(X, P, landmarks, k, showGui, motion);
-%hold on;
-%plot()
+disp(P);
+disp(xhat);
 
