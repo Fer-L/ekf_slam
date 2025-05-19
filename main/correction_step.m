@@ -1,37 +1,54 @@
-function [X, P, lm, H, R] = correction_step(X_pred, P_pred, sensor_data, N, lm)
-addpath('tools');
+function [xhat_upd, P_upd] = correction_step(xhat_pred, P_pred, sensor_data, landmark_map, Rr)
+    addpath('tools');
+  N_obs = numel(sensor_data);
+  n = length(xhat_pred);
 
-Z = zeros(size(sensor_data, 2) * 2, 1);
-Z_pred = zeros(size(sensor_data, 2) * 2, 1);
-H = [];
+  H = zeros(2*N_obs, n);
+  z_pred = zeros(2*N_obs, 1);
+  z_med  = zeros(2*N_obs, 1);
 
-for i = 1:size(sensor_data, 2)
-    %j = sensor_data(i).id
-    lm_id = sensor_data(i).id;
-    range = sensor_data(i).range;
-    phi = sensor_data(i).bearing;
+  xr  = xhat_pred(1);
+  yr  = xhat_pred(2);
+  thr = xhat_pred(3);
+%%
+  for k = 1:N_obs
+    id  = sensor_data(k).id;
+    idx = find(landmark_map == id, 1);
 
-    if(lm(lm_id)==false)
-        X_pred(2 * lm_id + 2:2 * lm_id + 3) = [X_pred(1); X_pred(2)] + [range * cos(phi + X_pred(3)); range * sin(phi + X_pred(3))];
-		lm(lm_id) = true;
-    end  
-    Z(i*2-1:i*2) = [range; phi];
-    delta = [X_pred(2 * lm_id + 2) - X_pred(1); X_pred(2 * lm_id + 3) - X_pred(2)];
-    q = delta' * delta;
-    Z_pred(i*2-1:i*2) = [sqrt(q); atan2(delta(2), delta(1)) - X_pred(3)];
-    
-    Gxj = [eye(3) zeros(3,(2*lm_id-2)) zeros(3,2) zeros(3,(2*N-2*lm_id));
-            zeros(2,3) zeros(2,(2*lm_id -2)) eye(2) zeros(2,(2*N-2*lm_id))];
-    h = 1/q * [-sqrt(q)*delta(1) -sqrt(q)*delta(2) 0 sqrt(q)*delta(1) sqrt(q)*delta(2);
-        delta(2) -delta(1) -q -delta(2) delta(1)] * Gxj;
-    H = [H; h];
-end
-    R = eye(size(sensor_data, 2) * 2) * 0.01;
-    K = P_pred * H' * inv(H * P_pred * H' + R);
-    X_pred = X_pred + K * normalize_all_bearings(Z - Z_pred);
-    X_pred(3) = normalize_angle(X_pred(3));
-    P_pred = (eye(size(X_pred, 1)) - K * H) * P_pred;
+    xm = xhat_pred(3 + 2*(idx-1) + 1);
+    ym = xhat_pred(3 + 2*(idx-1) + 2);
 
-    X = X_pred;
-    P = P_pred;
+    dx = xm - xr;
+    dy = ym - yr;
+    r_pred = sqrt(dx^2 + dy^2);
+    phi_pred = normalize_angle(atan2(dy, dx) - thr);
+%%
+    z_pred(2*k-1:2*k) = [r_pred; phi_pred];
+    z_med(2*k-1:2*k) = [sensor_data(k).range; sensor_data(k).bearing];
+%%
+    H_r = [ 
+      -dx/r_pred,    -dy/r_pred,     0;
+       dy/r_pred^2,  -dx/r_pred^2,  -1
+    ];
+    H_m = [
+       dx/r_pred,       dy/r_pred;
+      -dy/r_pred^2,    dx/r_pred^2
+    ];
+%%
+    Hi = zeros(2, n);
+    Hi(:,1:3) = H_r;
+    cols = 3 + 2*(idx-1) + (1:2);
+    Hi(:, cols) = H_m;
+
+    H(2*k-1:2*k, :) = Hi;
+  end
+  Rbig = kron(eye(N_obs), Rr);
+
+  K = (P_pred * H') / (H * P_pred * H' + Rbig);
+
+  nu = z_med - z_pred;
+
+  xhat_upd = xhat_pred + K * nu;
+  xhat_upd(3) = normalize_angle(xhat_upd(3));
+  P_upd = (eye(n) - K*H) * P_pred;
 end
